@@ -619,6 +619,7 @@ def save_training_checkpoint(
         print(f"Saving Model Checkpoint for Step {log_step}")
 
     # Wait for directories to be created
+    print(f"create dir")
     dist.barrier()
 
     # Save model components (main process only)
@@ -646,6 +647,7 @@ def save_training_checkpoint(
             )
 
     # Wait for model components to be saved
+    print(f"model components saved")
     dist.barrier()
 
     # Merge LoRA weights into base model and save resulting model checkpoint
@@ -662,6 +664,7 @@ def save_training_checkpoint(
             print(f"Saved merged model for Step {log_step} at: {checkpoint_dir}")
 
         # Wait for merged model to be saved
+        print(f"merged model to be saved")
         dist.barrier()
 
 
@@ -824,6 +827,7 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Update config.json and sync model files
     if distributed_state.is_main_process:
+        print("Wait for model files to be synced")
         update_auto_map(cfg.vla_path)
         check_model_logic_mismatch(cfg.vla_path)
 

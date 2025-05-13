@@ -65,6 +65,13 @@ from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def ensure_distributed():
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23456", rank=0, world_size=1)
+
+
 @dataclass
 class FinetuneConfig:
     # fmt: off
@@ -1143,4 +1150,5 @@ def finetune(cfg: FinetuneConfig) -> None:
 
 
 if __name__ == "__main__":
+    ensure_distributed()
     finetune()

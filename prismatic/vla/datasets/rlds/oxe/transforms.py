@@ -846,6 +846,23 @@ def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     return trajectory
 
 
+def ruijia_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # gripper action is in -1 (open)...1 (close) --> clip to 0...1, flip --> +1 = open, 0 = close
+    gripper_action = trajectory["action"][:, -1:]
+    gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
+
+    trajectory["action"] = tf.concat(
+        [
+            trajectory["action"][:, :6],
+            gripper_action,
+        ],
+        axis=1,
+    )
+    trajectory["observation"]["EEF_state"] = trajectory["observation"]["state"][:, :6]
+    trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -1:]  # 2D gripper state
+    return trajectory
+
+
 # === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
     "bridge_oxe": bridge_oxe_dataset_transform,
@@ -930,4 +947,5 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha1_fold_shirt_30_demos": aloha_dataset_transform,
     "aloha1_scoop_X_into_bowl_45_demos": aloha_dataset_transform,
     "aloha1_put_X_into_pot_300_demos": aloha_dataset_transform,
+    "ruijia_robot_grip_dataset": ruijia_dataset_transform,
 }

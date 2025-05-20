@@ -5,6 +5,7 @@ Utility classes defining a Metrics container and multiple Trackers to enable mod
 endpoints (e.g., JSONL local logs, Weights & Biases).
 """
 
+import os
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -94,7 +95,55 @@ class WeightsBiasesTracker:
         # A job gets 210 seconds to get its affairs in order
         time.sleep(210)
 
+class TensorBoardTracker:
+    def __init__(
+        self,
+        run_id: str,
+        run_dir: Path,
+        hparams: Dict[str, Any],
+    ) -> None:
+        self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
 
+        # 创建TensorBoard日志目录
+        self.log_dir = self.run_dir
+        
+        # 初始化TensorBoard
+        self.initialize()
+
+    @overwatch.rank_zero_only
+    def initialize(self) -> None:
+        from torch.utils.tensorboard import SummaryWriter
+        # 确保日志目录存在
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.writer = SummaryWriter(log_dir=self.log_dir)
+        
+    @overwatch.rank_zero_only
+    def write_hyperparameters(self) -> None:
+        # 将超参数转换为TensorBoard支持的格式
+        # TensorBoard要求超参数为简单类型(字符串、数字、布尔值)
+        processed_hparams = {}
+        for key, value in self.hparams.items():
+            if isinstance(value, (int, float, str, bool)):
+                processed_hparams[key] = value
+            else:
+                processed_hparams[key] = str(value)
+        
+        # TensorBoard的add_hparams方法需要一个度量字典，这里提供空字典
+        self.writer.add_hparams(processed_hparams, {})
+
+    @overwatch.rank_zero_only
+    def write(self, global_step: int, metrics: Dict[str, Union[int, float]]) -> None:
+        for key, value in metrics.items():
+            # 记录每个指标到TensorBoard
+            self.writer.add_scalar(key, value, global_step=global_step)
+
+    def finalize(self) -> None:
+        # 关闭TensorBoard writer并清理资源
+        if overwatch.is_rank_zero():
+            if hasattr(self, 'writer'):
+                self.writer.close()
+
+        time.sleep(210)
 # === Core Metrics Container :: Initializes Trackers => Compiles/Pushes Metrics ===
 
 
@@ -122,6 +171,8 @@ class Metrics:
                 tracker = WeightsBiasesTracker(
                     run_id, run_dir, hparams, project=wandb_project, entity=wandb_entity, group=self.stage
                 )
+            elif tracker_type == "tensorboard":
+                tracker = TensorBoardTracker(run_id, run_dir, hparams)
             else:
                 raise ValueError(f"Tracker with type `{tracker_type} is not supported!")
 

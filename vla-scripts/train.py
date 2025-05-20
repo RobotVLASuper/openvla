@@ -38,6 +38,11 @@ from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+def ensure_distributed():
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23456", rank=0, world_size=1)
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -76,7 +81,7 @@ class TrainConfig:
     hf_token: Union[str, Path] = Path(".hf_token")                  # Environment variable or Path to HF Token
 
     # Tracking Parameters
-    trackers: Tuple[str, ...] = ("jsonl", "wandb")                  # Trackers to initialize (if W&B, add config!)
+    trackers: Tuple[str, ...] = ("jsonl", "wandb","tensorboard")                  # Trackers to initialize (if W&B, add config!)
     wandb_project: str = "openvla"                                  # Name of W&B project to log to (use default!)
     wandb_entity: str = "stanford-voltron"                          # Name of entity to log under
 
@@ -260,4 +265,5 @@ def train(cfg: TrainConfig) -> None:
 
 
 if __name__ == "__main__":
+    ensure_distributed()
     train()

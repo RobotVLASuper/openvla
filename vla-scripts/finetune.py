@@ -27,6 +27,7 @@ from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq,
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 import wandb
+from torch.utils.tensorboard import SummaryWriter
 
 from experiments.robot.openvla_utils import (
     check_model_logic_mismatch,
@@ -64,6 +65,8 @@ from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Wandb set offline
+os.environ["WANDB_MODE"]="offline"
 
 def ensure_distributed():
     if not dist.is_available():
@@ -554,6 +557,28 @@ def compute_smoothened_metrics(metrics_deques) -> dict:
     return smoothened_metrics
 
 
+def log_metrics_to_tensorboard(metrics, prefix, step, tfb_writer) -> None:
+    """
+    Log metrics to TensorBoard.
+
+    Args:
+        metrics (dict): Dictionary of metrics to log
+        prefix (str): Prefix for metric names
+        step (int): Training step
+        tfb_writer (SummaryWriter): TensorBoard writer instance
+
+    Returns:
+        None.
+    """
+    for name, value in metrics.items():
+        # Map loss_value to Loss for better readability in TensorBoard
+        if name == "loss_value":
+            tfb_writer.add_scalar(f"{prefix}/Loss", value, step)
+        # Keep other metrics as is
+        else:
+            tfb_writer.add_scalar(f"{prefix}/{name.replace('_', ' ').title()}", value, step)
+
+
 def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
     """
     Log metrics to Weights & Biases.
@@ -688,6 +713,7 @@ def run_validation(
     log_step,
     distributed_state,
     val_time_limit,
+    writer,
 ) -> None:
     """
     Compute validation set metrics for logging.
@@ -705,6 +731,7 @@ def run_validation(
         log_step (int): Current logging step.
         distributed_state (PartialState): Distributed training state.
         val_time_limit (int): Time limit for computing validation metrics.
+        writer (SummaryWriter): TensorBoard writer instance.
 
     Returns:
         None.
@@ -758,6 +785,7 @@ def run_validation(
     # Log validation metrics to W&B
     if distributed_state.is_main_process:
         log_metrics_to_wandb(avg_val_metrics, "VLA Val", log_step, wandb)
+        log_metrics_to_tensorboard(avg_val_metrics, "VLA Val", log_step, writer)
 
 
 @draccus.wrap()
@@ -801,6 +829,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Initialize wandb logging
     if distributed_state.is_main_process:
         wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"ft+{run_id}")
+        tfb_writer = SummaryWriter(log_dir=run_dir)
 
     # Print detected constants
     print(
@@ -1084,6 +1113,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             log_step = gradient_step_idx if not cfg.resume else cfg.resume_step + gradient_step_idx
             if distributed_state.is_main_process and log_step % cfg.wandb_log_freq == 0:
                 log_metrics_to_wandb(smoothened_metrics, "VLA Train", log_step, wandb)
+                log_metrics_to_tensorboard(smoothened_metrics, "VLA Train", log_step, tfb_writer)
 
             # [If applicable] Linearly warm up learning rate from 10% to 100% of original
             if cfg.lr_warmup_steps > 0:
@@ -1101,6 +1131,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                     },
                     step=log_step,
                 )
+                tfb_writer.add_scalar("VLA Train/Learning Rate", scheduler.get_last_lr()[0], log_step)
 
             # Optimizer and LR scheduler step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
@@ -1139,6 +1170,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                     log_step=log_step,
                     distributed_state=distributed_state,
                     val_time_limit=cfg.val_time_limit,
+                    writer=tfb_writer,
                 )
                 # Set model back to training mode after validation
                 vla.train()

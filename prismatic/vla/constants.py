@@ -26,7 +26,9 @@ class NormalizationType(str, Enum):
 LIBERO_CONSTANTS = {
     "NUM_ACTIONS_CHUNK": 8,
     "ACTION_DIM": 7,
-    "PROPRIO_DIM": 8,
+    # "PROPRIO_DIM": 8,
+    # NOTE: our libero shape is 7
+    "PROPRIO_DIM": 7,
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
 }
 

@@ -1,14 +1,14 @@
 CUDA_VISIBLE_DEVICES=1 python vla-scripts/finetune.py \
   --vla_path /data1/model_weight/pretrain_weight/openvla/openvla-7b \
-  --data_root_dir /data1/workspace/wxl/data/ \
-  --dataset_name libero_spatial_no_noops \
+  --data_root_dir /data1/datasets/public_datasets/modified_libero_rlds  \
+  --dataset_name libero_object_no_noops \
   --run_root_dir /data1/workspace/huqiong/openvla-oft \
   --use_l1_regression True \
   --use_diffusion False \
   --use_film False \
   --num_images_in_input 2 \
   --use_proprio True \
-  --batch_size 8 \
+  --batch_size 1 \
   --learning_rate 5e-4 \
   --num_steps_before_decay 100000 \
   --max_steps 150005 \
@@ -19,3 +19,5 @@ CUDA_VISIBLE_DEVICES=1 python vla-scripts/finetune.py \
   --wandb_entity ruijia \
   --wandb_project openvla \
   --run_id_note parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state_0520
+
+#   --data_root_dir /data1/workspace/wxl/data/traindata/tfrecorddata \

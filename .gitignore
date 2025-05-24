@@ -1,4 +1,5 @@
 test_tmp/
+.hf_token
 .vscode/
 .history/
 .github/copilot-instructions.md

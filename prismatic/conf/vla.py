@@ -78,9 +78,13 @@ class Exp_SigLIP_224px_Bridge(VLAConfig):
     epochs: int = 1000
     max_steps: Optional[int] = None
 
-    expected_world_size: int = 8
-    global_batch_size: int = 256
-    per_device_batch_size: int = 32
+    # DEBUG: Set to 1 for testing
+    expected_world_size: int = 1
+    global_batch_size: int = 2
+    per_device_batch_size: int = 2
+    # expected_world_size: int = 8
+    # global_batch_size: int = 256
+    # per_device_batch_size: int = 32
 
     learning_rate: float = 2e-5
     weight_decay: float = 0.0
@@ -198,6 +202,19 @@ class Exp_SigLIP_224px_Droid_Wipe(Exp_SigLIP_224px_Bridge):
     data_mix: str = "droid_wipe"
 
 
+# === [1 GPU] test ====
+@dataclass
+class Exp_DINOSigLIP_Test(Exp_DinoSigLIP_224px_Bridge):
+    vla_id: str = "dinosiglip_test"
+    base_vlm: Union[str, Path] = "prism-dinosiglip-224px+7b"
+
+    data_mix: str = "bridge"
+    expected_world_size: int = 1
+    global_batch_size: int = 2
+    per_device_batch_size: int = 2
+    learning_rate: float = 1e-5
+
+
 # === Define a VLA Registry Enum for Reference & Validation ===
 @unique
 class VLARegistry(Enum):
@@ -224,6 +241,9 @@ class VLARegistry(Enum):
 
     # === DROID Fine-tuning Configs ===
     SIGLIP_224PX_MX_DROID_WIPE = Exp_SigLIP_224px_Droid_Wipe
+
+    # === Test Configs ===
+    DINOSIGLIP_TEST = Exp_DINOSigLIP_Test
 
     @property
     def vla_id(self) -> str:

@@ -8,7 +8,8 @@ format to OpenVLA, IterableDataset shim.
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type
-
+import json
+import pickle
 import numpy as np
 import torch
 from PIL import Image
@@ -90,6 +91,7 @@ class RLDSBatchTransform:
 
         return return_dict
 
+# DEBUG:add debug
 
 class RLDSDataset(IterableDataset):
     def __init__(
@@ -166,6 +168,11 @@ class RLDSDataset(IterableDataset):
         # fmt: on
 
         # Initialize RLDS Dataset
+        # DEBUG: debug use
+        # with open("/root/openvla-oft/test_tmp/dataset_cfg.pkl", "wb") as f:
+        #     pickle.dump(rlds_config, f)
+        # with open("/root/openvla-oft/test_tmp/batch_transform", "wb") as f:
+        #     pickle.dump(batch_transform, f)
         self.dataset, self.dataset_length, self.dataset_statistics = self.make_dataset(rlds_config)
 
     def make_dataset(self, rlds_config):

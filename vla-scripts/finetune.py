@@ -72,7 +72,7 @@ def ensure_distributed():
     if not dist.is_available():
         return
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23456", rank=0, world_size=1)
+        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23458", rank=0, world_size=1)
 
 
 @dataclass

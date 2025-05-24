@@ -139,6 +139,10 @@ class PureOverwatch:
         return 0
 
     @staticmethod
+    def local_rank() -> int:
+        return 0
+
+    @staticmethod
     def world_size() -> int:
         return 1
 

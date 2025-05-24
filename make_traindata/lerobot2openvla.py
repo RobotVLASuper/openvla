@@ -3,6 +3,8 @@ import cv2
 import pyarrow.parquet as pq
 import json
 import re
+from tqdm import tqdm
+from concurrent import futures
 
 def sort_files_by_part(file_names):
     """
@@ -25,32 +27,45 @@ def sort_files_by_part(file_names):
     # 使用提取的部分作为排序键
     return sorted(file_names, key=extract_sort_key)
 
+def get_all_file_path(file_dir:str,filter_=('.mp4')) -> list:
+    #遍历文件夹下所有的file
+    return [os.path.join(maindir,filename) for maindir,_,file_name_list in os.walk(file_dir) \
+        for filename in file_name_list \
+        if os.path.splitext(filename)[1] in filter_ ]
+
+def extract_one_video(file_path,output_folder):
+        filename=os.path.basename(file_path)
+        keyname = os.path.splitext(filename)[0]
+        output_subfolder = os.path.join(output_folder, os.path.splitext(filename)[0])
+        os.makedirs(output_subfolder, exist_ok=True)
+
+        # 打开视频文件
+        cap = cv2.VideoCapture(file_path)
+        frame_count = 0
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # 按照设定的间隔保存帧
+            if frame_count % interval == 0:
+                output_filename = os.path.join(output_subfolder, f"{keyname}_{captype}_{frame_count}.png")
+                cv2.imwrite(output_filename, frame)
+
+            frame_count += 1
+
+        cap.release()
+
 def extract_frames(input_folder, output_folder, interval, captype):
     # 遍历输入文件夹中的所有文件
-    for filename in os.listdir(input_folder):
-        if filename.endswith(".mp4"):
-            file_path = os.path.join(input_folder, filename)
-            keyname = os.path.splitext(filename)[0]
-            output_subfolder = os.path.join(output_folder, os.path.splitext(filename)[0])
-            os.makedirs(output_subfolder, exist_ok=True)
+    mp4_list=get_all_file_path(input_folder,filter_=['.mp4'])
 
-            # 打开视频文件
-            cap = cv2.VideoCapture(file_path)
-            frame_count = 0
+    with futures.ProcessPoolExecutor(48) as executor:
+        tasks=(executor.submit(extract_one_video, file_path, output_folder) for file_path in mp4_list)
+        for task in tqdm(futures.as_completed(tasks),total=len(mp4_list), desc="Processing videos"):
+            task.result()
 
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                # 按照设定的间隔保存帧
-                if frame_count % interval == 0:
-                    output_filename = os.path.join(output_subfolder, f"{keyname}_{captype}_{frame_count}.png")
-                    cv2.imwrite(output_filename, frame)
-
-                frame_count += 1
-
-            cap.release()
 
 
 def parse_paquet_data(datapath,output_folder):
@@ -63,6 +78,7 @@ def parse_paquet_data(datapath,output_folder):
             file_path = os.path.join(datapath, filename)
             keyname = os.path.splitext(filename)[0]
             output_subfolder = os.path.join(output_folder, os.path.splitext(filename)[0])
+            os.makedirs(output_subfolder, exist_ok=True)
             topath = os.path.join(output_subfolder, 'robot_motion_data.json')
             # 打开Parquet文件
             parquet_file = pq.ParquetFile(file_path)
@@ -123,22 +139,22 @@ def parse_paquet_data(datapath,output_folder):
 
 if __name__=="__main__":
 
-    # input_folder_top = "/data1/workspace/wxl/data/tarindata/ur_grasp_0428_gello/videos/chunk-000/observation.images.0_top"
-    output_folder_top = "/data1/workspace/wxl/data/tarindata/examples"
-    # interval = 1
-    # captype = 'top'
+    input_folder_top = "/data1/datasets/ur_grasp_db/ur_grasp_04all_05all/videos/chunk-000/observation.images.0_top"
+    output_folder_top = "/data1/datasets/openvla/data_tmp"
+    interval = 1
+    captype = 'top'
     # # 调用函数进行帧解析
-    # extract_frames(input_folder_top, output_folder_top, interval, captype)
+    extract_frames(input_folder_top, output_folder_top, interval, captype)
     #
-    # input_folder_top = "/data1/workspace/wxl/data/tarindata/ur_grasp_0428_gello/videos/chunk-000/observation.images.1_right"
-    # output_folder_top = "/data1/workspace/wxl/data/tarindata/examples"
-    # interval = 1
-    # captype = 'right'
+    input_folder_top = "/data1/datasets/ur_grasp_db/ur_grasp_04all_05all/videos/chunk-000/observation.images.1_right"
+    output_folder_top = "/data1/datasets/openvla/data_tmp"
+    interval = 1
+    captype = 'right'
     # # 调用函数进行帧解析
-    # extract_frames(input_folder_top, output_folder_top, interval, captype)
+    extract_frames(input_folder_top, output_folder_top, interval, captype)
 
 
-    parquetdatapath = '/data1/workspace/wxl/data/tarindata/ur_grasp_0428_gello/data/chunk-000'
+    parquetdatapath = '/data1/datasets/ur_grasp_db/ur_grasp_04all_05all/data/chunk-000'
 
     parse_paquet_data(parquetdatapath,output_folder_top)
 

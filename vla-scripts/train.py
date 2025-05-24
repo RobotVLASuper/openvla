@@ -56,6 +56,10 @@ class TrainConfig:
     vla: VLAConfig = field(
         default_factory=VLAConfig.get_choice_class(VLARegistry.DINOSIGLIP_224PX_MX_OXE_MAGIC_SOUP_PLUS.vla_id)
     )
+    # DEBUG: Test
+    # vla: VLAConfig = field(
+    #     default_factory=VLAConfig.get_choice_class(VLARegistry.DINOSIGLIP_TEST.vla_id)
+    # )
 
     # Directory Paths
     data_root_dir: Path = Path(                                     # Path to Open-X dataset directory
@@ -100,6 +104,7 @@ class TrainConfig:
 
         self.train_strategy = self.vla.train_strategy
 
+        breakpoint()
         # [Validate] Assert on `expected_world_size`
         assert (
             self.vla.expected_world_size == overwatch.world_size()

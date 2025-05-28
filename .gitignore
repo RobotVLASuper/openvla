@@ -1,3 +1,5 @@
+make_traindata/*.txt
+make_traindata/*.csv
 test_tmp/
 .hf_token
 .vscode/

@@ -104,7 +104,6 @@ class TrainConfig:
 
         self.train_strategy = self.vla.train_strategy
 
-        breakpoint()
         # [Validate] Assert on `expected_world_size`
         assert (
             self.vla.expected_world_size == overwatch.world_size()

@@ -21,7 +21,7 @@ from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR,LinearLR
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -62,6 +62,8 @@ from prismatic.vla.constants import (
 from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
+import prismatic.debug_tools as D
+
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -72,7 +74,7 @@ def ensure_distributed():
     if not dist.is_available():
         return
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23458", rank=0, world_size=1)
+        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23459", rank=0, world_size=1)
 
 
 @dataclass
@@ -84,7 +86,7 @@ class FinetuneConfig:
     data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
     dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
-    shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
+    shuffle_buffer_size: int = 100_00               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
@@ -96,6 +98,7 @@ class FinetuneConfig:
 
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
+    lr_scheduler="linear"                            # mutilstep,linear
     learning_rate: float = 5e-4                      # Learning rate
     lr_warmup_steps: int = 0                         # Number of steps to warm up learning rate (from 10% to 100%)
     num_steps_before_decay: int = 100_000            # Number of steps before LR decays by 10x
@@ -787,6 +790,24 @@ def run_validation(
         log_metrics_to_wandb(avg_val_metrics, "VLA Val", log_step, wandb)
         log_metrics_to_tensorboard(avg_val_metrics, "VLA Val", log_step, writer)
 
+def get_scheduler(cfg:FinetuneConfig, optimizer):
+    """
+    Get the learning rate scheduler based on the configuration.
+
+    Args:
+        cfg (FinetuneConfig): Training configuration.
+        optimizer (torch.optim.Optimizer): Optimizer instance.
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: Learning rate scheduler instance.
+    """
+    if cfg.lr_scheduler == "mutilstep":
+        # NOTE: officially
+        return MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
+    elif cfg.lr_scheduler == "linear":
+        return LinearLR(optimizer, start_factor=cfg.learning_rate,end_factor=0.01*cfg.learning_rate,total_iters=cfg.max_steps)
+    else:
+        raise ValueError(f"Unsupported lr_scheduler: {cfg.lr_scheduler}")
 
 @draccus.wrap()
 def finetune(cfg: FinetuneConfig) -> None:
@@ -978,12 +999,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     original_lr = optimizer.param_groups[0]["lr"]
 
     # Create learning rate scheduler
-    scheduler = MultiStepLR(
-        optimizer,
-        milestones=[cfg.num_steps_before_decay],  # Number of steps after which LR will change
-        gamma=0.1,  # Multiplicative factor of learning rate decay
-    )
 
+    scheduler=get_scheduler(cfg, optimizer)
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
 
@@ -1032,10 +1049,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
             image_aug=cfg.image_aug,
             train=False,
-        )
-
-    # [Important] Save dataset statistics so that we can unnormalize actions during inference
-    if distributed_state.is_main_process:
+        ) # [Important] Save dataset statistics so that we can unnormalize actions during inference if distributed_state.is_main_process:
         save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
 
     # Create collator and dataloader

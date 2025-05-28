@@ -62,7 +62,7 @@ def parse_json(json_file, resize_imgW, resize_imgH):
             #                  idx_info['observation']['end_effector_pose']['orientation_rpy'] + \
             #                  [idx_gripper])
             obs_state.append(idx_info['observation']['obs_state'])
-            action.append(idx_info['observation']['obs_state'])
+            action.append(idx_info['observation']['action'])
         elif DataForm == 'joint':
             obs_state.append(idx_info['observation']['joint_positions'][:-1] + [idx_gripper])
         else:
@@ -156,9 +156,9 @@ if __name__ == "__main__":
     DataForm = 'grip'  # 'grip' or 'joint'
     DataVesion = '1.3.1'  # 1.0.x 帧率高=750ms,初始位置不固定; 1.1.x 帧率高=750ms,初始位置固定; 1.2.x 帧率310ms,初始位置固定
     # dataset_root = '/home/edavio/RecordUR/RecordUR/20250303'
-    dataset_root = '/data1/datasets/openvla/data_tmp'
+    dataset_root = '/data1/datasets/can_remove/hq_workspace/test_dataset/convert_tmp'
     # save_dir = f'./ruijia_dataset/ruijia_robot_{DataForm}_dataset/{DataVesion}'
-    save_dir = f'/data1/datasets/openvla/data0520/{DataVesion}'
+    save_dir = f'/data1/datasets/can_remove/hq_workspace/test_dataset/final_data/ruijia_robot_grip_dataset/{DataVesion}'
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 

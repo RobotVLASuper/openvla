@@ -161,8 +161,9 @@ def decode_video_frames_torchvision(
     if log_loaded_timestamps:
         logging.info(f"{closest_ts=}")
 
+    #NOTE: torchvision VideoReader returns frames in [0, 255] range as uint8
     # convert to the pytorch format which is float32 in [0,1] range (and channel first)
-    closest_frames = closest_frames.type(torch.float32) / 255
+    # closest_frames = closest_frames.type(torch.float32) / 255
 
     assert len(timestamps) == len(closest_frames)
     return closest_frames
@@ -236,8 +237,9 @@ def decode_video_frames_torchcodec(
     if log_loaded_timestamps:
         logging.info(f"{closest_ts=}")
 
+    #NOTE: torchcodec VideoDecoder returns frames in [0, 255] range as uint8
     # convert to float32 in [0,1] range (channel first)
-    closest_frames = closest_frames.type(torch.float32) / 255
+    # closest_frames = closest_frames.type(torch.float32) / 255
 
     assert len(timestamps) == len(closest_frames)
     return closest_frames

@@ -49,6 +49,7 @@ def to_padding(tensor: tf.Tensor) -> tf.Tensor:
 
 
 # ruff: noqa: B023
+# XXX: important,这里进行action和state归一化
 def normalize_action_and_proprio(traj: Dict, metadata: Dict, normalization_type: NormalizationType):
     """Normalizes the action and proprio fields of a trajectory using the given metadata."""
     keys_to_normalize = {"action": "action", "proprio": "observation/proprio"}
@@ -76,11 +77,14 @@ def normalize_action_and_proprio(traj: Dict, metadata: Dict, normalization_type:
             traj = dl.transforms.selective_tree_map(
                 traj,
                 match=lambda k, _: k == traj_key,
+
                 map_fn=lambda x: tf.where(
                     mask,
                     tf.clip_by_value(2 * (x - low) / (high - low + 1e-8) - 1, -1, 1),
                     x,
                 ),
+                # DEBUG: remove normalization
+                # map_fn=lambda x: x
             )
 
             # Note (Moo Jin): Map unused action dimensions (i.e., dimensions where min == max) to all 0s.

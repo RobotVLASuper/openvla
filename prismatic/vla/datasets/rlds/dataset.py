@@ -235,7 +235,11 @@ def make_dataset_from_rlds(
 
     dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
+    # NOTE: dataset action and state is origin value
     dataset = dataset.traj_map(restructure, num_parallel_calls)
+    # #DEBUG:
+    # for data in dataset.take(1):
+    #     breakpoint()
     dataset = dataset.traj_map(
         partial(
             normalize_action_and_proprio,
@@ -330,6 +334,9 @@ def apply_trajectory_transforms(
 
     # chunks observations and actions, giving them a new axis at index 1 of size `window_size` and
     # `window_size + future_action_window_size`, respectively
+    #DEBUG:
+    # for data in dataset.take(1):
+    #     breakpoint()
     dataset = dataset.traj_map(
         partial(
             traj_transforms.chunk_act_obs,
@@ -502,6 +509,8 @@ def make_interleaved_dataset(
     dataset_sizes, all_dataset_statistics = [], {}
     for dataset_kwargs in dataset_kwargs_list:
         data_kwargs = copy.deepcopy(dataset_kwargs)
+        # #DEBUG:
+        # data_kwargs['shuffle']=False
         if "dataset_frame_transform_kwargs" in data_kwargs:
             data_kwargs.pop("dataset_frame_transform_kwargs")
         _, dataset_statistics = make_dataset_from_rlds(**data_kwargs, train=train)
@@ -541,6 +550,8 @@ def make_interleaved_dataset(
             if "dataset_frame_transform_kwargs" in dataset_kwargs
             else {}
         )
+        # #DEBUG:
+        # data_kwargs['shuffle']=False
         dataset, _ = make_dataset_from_rlds(
             **dataset_kwargs,
             train=train,
@@ -560,6 +571,7 @@ def make_interleaved_dataset(
     # Interleave at the Frame Level
     dataset: dl.DLataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
 
+    #DEBUG: debug will close off shuffle
     # Validation =>> fix a single shuffle buffer of data and cache it in RAM; prevents gradual memory increase!
     if not train:
         dataset = dataset.take(shuffle_buffer_size).cache()

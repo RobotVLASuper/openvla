@@ -4,6 +4,7 @@ Important constants for VLA training and evaluation.
 Attempts to automatically identify the correct constants to set based on the Python command used to launch
 training or evaluation. If it is unclear, defaults to using the LIBERO simulation benchmark constants.
 """
+
 import sys
 from enum import Enum
 
@@ -86,3 +87,8 @@ print(f"  ACTION_DIM = {ACTION_DIM}")
 print(f"  PROPRIO_DIM = {PROPRIO_DIM}")
 print(f"  ACTION_PROPRIO_NORMALIZATION_TYPE = {ACTION_PROPRIO_NORMALIZATION_TYPE}")
 print("If needed, manually set the correct constants in `prismatic/vla/constants.py`!")
+
+# *******************DEBUG***************************
+DEBUG = False
+CLOSE_SHUFFLE = False
+CLOSE_ACTION_NORM = False

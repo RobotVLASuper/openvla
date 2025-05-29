@@ -26,6 +26,7 @@ from prismatic.vla.datasets.rlds.utils.data_utils import (
     pprint_data_mixture,
     tree_map,
 )
+from prismatic.vla.constants import CLOSE_SHUFFLE
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -233,13 +234,12 @@ def make_dataset_from_rlds(
     # construct the dataset
     split = "train" if train else "val"
 
+    if CLOSE_SHUFFLE:
+        shuffle = False
     dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
-    # NOTE: dataset action and state is origin value
+    # NOTE: dataset action and state is origin value,image just file bin
     dataset = dataset.traj_map(restructure, num_parallel_calls)
-    # #DEBUG:
-    # for data in dataset.take(1):
-    #     breakpoint()
     dataset = dataset.traj_map(
         partial(
             normalize_action_and_proprio,
@@ -334,9 +334,6 @@ def apply_trajectory_transforms(
 
     # chunks observations and actions, giving them a new axis at index 1 of size `window_size` and
     # `window_size + future_action_window_size`, respectively
-    #DEBUG:
-    # for data in dataset.take(1):
-    #     breakpoint()
     dataset = dataset.traj_map(
         partial(
             traj_transforms.chunk_act_obs,
@@ -510,7 +507,8 @@ def make_interleaved_dataset(
     for dataset_kwargs in dataset_kwargs_list:
         data_kwargs = copy.deepcopy(dataset_kwargs)
         # #DEBUG:
-        # data_kwargs['shuffle']=False
+        if CLOSE_SHUFFLE:
+            data_kwargs['shuffle']=False
         if "dataset_frame_transform_kwargs" in data_kwargs:
             data_kwargs.pop("dataset_frame_transform_kwargs")
         _, dataset_statistics = make_dataset_from_rlds(**data_kwargs, train=train)
@@ -551,7 +549,8 @@ def make_interleaved_dataset(
             else {}
         )
         # #DEBUG:
-        # data_kwargs['shuffle']=False
+        if CLOSE_SHUFFLE:
+            data_kwargs['shuffle']=False
         dataset, _ = make_dataset_from_rlds(
             **dataset_kwargs,
             train=train,
@@ -578,7 +577,8 @@ def make_interleaved_dataset(
 
     # Shuffle the Dataset
     #   =>> IMPORTANT :: Shuffle AFTER .cache(), or else memory will still leak!
-    dataset = dataset.shuffle(shuffle_buffer_size)
+    if not CLOSE_SHUFFLE:
+        dataset = dataset.shuffle(shuffle_buffer_size)
 
     # Apply Frame Transforms
     overwatch.info("Applying frame transforms on dataset...")

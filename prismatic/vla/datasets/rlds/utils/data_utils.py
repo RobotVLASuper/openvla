@@ -15,7 +15,7 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from prismatic.overwatch import initialize_overwatch
-from prismatic.vla.constants import NormalizationType
+from prismatic.vla.constants import NormalizationType, CLOSE_ACTION_NORM
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -74,18 +74,18 @@ def normalize_action_and_proprio(traj: Dict, metadata: Dict, normalization_type:
                 low = metadata[key]["q01"]
                 high = metadata[key]["q99"]
             mask = metadata[key].get("mask", tf.ones_like(metadata[key]["min"], dtype=tf.bool))
-            traj = dl.transforms.selective_tree_map(
-                traj,
-                match=lambda k, _: k == traj_key,
 
-                map_fn=lambda x: tf.where(
+            if CLOSE_ACTION_NORM:
+                # DEBUG: remove normalization
+                map_fn_f = lambda x: x
+            else:
+                map_fn_f = lambda x: tf.where(
                     mask,
                     tf.clip_by_value(2 * (x - low) / (high - low + 1e-8) - 1, -1, 1),
                     x,
-                ),
-                # DEBUG: remove normalization
-                # map_fn=lambda x: x
-            )
+                )
+
+            traj = dl.transforms.selective_tree_map(traj, match=lambda k, _: k == traj_key, map_fn=map_fn_f)
 
             # Note (Moo Jin): Map unused action dimensions (i.e., dimensions where min == max) to all 0s.
             zeros_mask = metadata[key]["min"] == metadata[key]["max"]

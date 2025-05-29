@@ -11,6 +11,8 @@ from typing import Dict, Tuple, Union
 import dlimp as dl
 import tensorflow as tf
 from absl import logging
+import prismatic.debug_tools as D
+from prismatic.vla.constants import DEBUG
 
 
 # ruff: noqa: B023

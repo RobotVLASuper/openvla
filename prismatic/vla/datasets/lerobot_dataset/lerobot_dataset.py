@@ -76,6 +76,8 @@ from .types import Robot
 
 CODEBASE_VERSION = "v2.1"
 
+import  prismatic.debug_tools as D
+
 
 class LeRobotDatasetMetadata:
     def __init__(

@@ -5,17 +5,24 @@ Lightweight PyTorch Dataset Definition for wrapping RLDS TFDS Pipeline; just def
 format to OpenVLA, IterableDataset shim.
 """
 
+import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type, Callable, Optional
+from typing import Any, Dict, Tuple, Type, Callable, Optional, List, Union
 import json
 import pickle
+from concurrent import futures
+import multiprocessing as mp
+from copy import deepcopy
+
+from tqdm import tqdm
+import pyarrow.parquet as pq
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
 from transformers import PreTrainedTokenizerBase
-
+import torchvision.transforms as T
 from prismatic.models.backbones.llm.prompting import PromptBuilder
 from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
@@ -28,10 +35,14 @@ from prismatic.vla.constants import (
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
     STOP_INDEX,
+    NormalizationType,
+    CLOSE_ACTION_NORM,
+    CLOSE_SHUFFLE,
 )
 from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_dataset
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 from prismatic.vla.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+import prismatic.debug_tools as D
 
 
 @dataclass
@@ -329,11 +340,23 @@ class DummyDataset(Dataset):
         return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels)
 
 
+# *********TOOLS*************
+def resize_image(image: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+    """使用 Lanczos 插值法调整图像大小。输入和输出均为 uint8 类型。"""
+    assert image.dtype == torch.uint8, "输入图像必须是 uint8 类型"
+    transform = T.Compose([T.ToPILImage(), T.Resize(size, interpolation=T.InterpolationMode.LANCZOS), T.ToTensor()])
+    image = transform(image)
+    image = torch.clamp((image * 255).round(), 0, 255).byte()
+    return image
+
+
+# NOTE: not support img_aug,not suppport train
 class LeRobotIterDataset(IterableDataset):
     def __init__(
         self,
         repo_id: str,
         batch_transform: Optional[RLDSBatchTransform],
+        resize_resolution: Tuple[int, int],
         root: str | Path | None = None,
         episodes: list[int] | None = None,
         image_transforms: Callable | None = None,
@@ -344,6 +367,17 @@ class LeRobotIterDataset(IterableDataset):
         download_videos: bool = True,
         video_backend: str | None = None,
         train: bool = True,
+        goal_relabeling_strategy: str = "uniform",  # 新增参数
+        action_normalization_type: NormalizationType = NormalizationType.BOUNDS_Q99,
+        action_norm_mask: Optional[Union[Tuple[bool, bool, bool, bool, bool, bool, bool], np.ndarray]] = (
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+        ),  # 用于动作去归一化
     ) -> None:
         """
         初始化 LeRobotIterDataset
@@ -372,25 +406,234 @@ class LeRobotIterDataset(IterableDataset):
         )
 
         # 存储数据集统计信息，用于动作去归一化
-        self.dataset_statistics = {self.repo_id: self.lerobot_dataset.meta.stats}
-
+        self.dataset_statistics = self._get_dataset_statistics()
         self.dataset_length = len(self.lerobot_dataset)
+        self.resize_resolution = resize_resolution
+
+        # 如果启用目标重标记，需要按episode组织数据
+        self.goal_relabeling_strategy = goal_relabeling_strategy
+        if self.goal_relabeling_strategy:
+            self._organize_episodes_data()
+        self.action_normalization_type = action_normalization_type
+        if isinstance(action_norm_mask, np.ndarray):
+            self.action_norm_mask = action_norm_mask
+        else:
+            self.action_norm_mask = np.array(action_norm_mask, dtype=np.bool_)
+        self.idx_list=list(range(len(self.lerobot_dataset)))
+
+
+    def _norm_one_action(self, statistics: Dict[str, np.ndarray], data: np.ndarray) -> np.ndarray:
+        if self.action_normalization_type == NormalizationType.NORMAL:
+            mean = statistics["mean"]
+            std = statistics["std"]
+            # 对masked的维度进行归一化
+            normalized_data = np.where(self.action_norm_mask, (data - mean) / (std + 1e-8), data)
+            return normalized_data
+
+        elif self.action_normalization_type in [NormalizationType.BOUNDS, NormalizationType.BOUNDS_Q99]:
+            if self.action_normalization_type == NormalizationType.BOUNDS:
+                low = statistics["min"]
+                high = statistics["max"]
+            else:  # BOUNDS_Q99
+                low = statistics["q01"]
+                high = statistics["q99"]
+
+            # 归一化到[-1, 1]范围
+            normalized_data = np.where(
+                self.action_norm_mask, np.clip(2 * (data - low) / (high - low + 1e-8) - 1, -1, 1), data
+            )
+
+            # 将未使用的动作维度(min == max)映射为0
+            zeros_mask = np.isclose(low, high)
+            normalized_data = np.where(zeros_mask, 0.0, normalized_data)
+            return normalized_data
+
+    def _normalize_sample_action_and_proprio(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用numpy归一化sample中的action和proprio字段
+
+        Args:
+            sample: 包含action和observation字典的样本
+
+        Returns:
+            归一化后的sample
+        """
+
+        # 复制sample避免修改原始数据
+        normalized_sample = sample.copy()
+        normalized_sample["observation"] = sample["observation"].copy()
+
+        # 定义需要归一化的键
+        keys_to_normalize = {
+            "action": ("action", sample["action"], self.dataset_statistics[self.repo_id]["action"]),
+            "proprio": (
+                "observation/proprio",
+                sample["observation"]["proprio"],
+                self.dataset_statistics[self.repo_id]["proprio"],
+            ),
+        }
+
+        for key, (_, data, statistics) in keys_to_normalize.items():
+            if key == "action":
+                normalized_sample["action"] = self._norm_one_action(statistics, data)
+            else:  # proprio
+                normalized_sample["observation"]["proprio"] = self._norm_one_action(statistics, data)
+
+        return normalized_sample
+
+    def _get_dataset_statistics(self) -> None:
+        dataset_statistics = {
+            self.repo_id: {
+                "action": self.lerobot_dataset.meta.stats["action"],
+                "proprio": self.lerobot_dataset.meta.stats["observation.state"],
+                "num_transitions": np.array(self.lerobot_dataset.meta.total_frames, dtype=np.int64),
+                "num_trajectories": np.array(self.lerobot_dataset.meta.total_episodes, dtype=np.int64),
+            }
+        }
+
+        # 这里就是为了得到狗日的q01，q99
+        parquet_files = self._get_parquet_files()
+        if not parquet_files:
+            print("没有找到任何parquet文件，无法获取数据集统计信息")
+            return dataset_statistics
+
+        print(f"找到 {len(parquet_files)} 个parquet文件")
+
+        # 使用多进程并行处理parquet文件
+        num_processes = min(len(parquet_files), mp.cpu_count())
+
+        # 收集结果
+        all_actions = []
+        all_proprio = []
+        with futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
+            # 将文件分配给不同进程
+            tasks = []
+            for file_path in parquet_files:
+                future = executor.submit(self._process_parquet_file, file_path)
+                tasks.append(future)
+
+            for future in tqdm(
+                futures.as_completed(tasks, timeout=300), total=len(tasks), desc="Processing parquet files"
+            ):
+                try:
+                    stats = future.result()  # 5分钟超时
+                    if stats is not None:
+                        all_actions.append(stats[0])
+                        all_proprio.append(stats[1])
+                    # print(f"已处理文件 {i + 1}/{len(parquet_files)}")
+                except Exception as e:
+                    print(f"处理文件时出错: {e}")
+        with D.timeblock(f"{self.repo_id} 拼接计算q01和q99 耗时:"):
+            all_actions_array = (
+                np.concatenate(all_actions, axis=0) if all_actions else np.empty((0, ACTION_DIM), dtype=np.float64)
+            )
+            all_proprio_array = (
+                np.concatenate(all_proprio, axis=0) if all_proprio else np.empty((0, PROPRIO_DIM), dtype=np.float64)
+            )
+        with D.timeblock(f"Calculate quantiles for actions and proprioception data for {self.repo_id}"):
+            actions_q01 = np.quantile(all_actions_array, 0.01, axis=0)
+            actions_q99 = np.quantile(all_actions_array, 0.99, axis=0)
+            proprio_q01 = np.quantile(all_proprio_array, 0.01, axis=0)
+            proprio_q99 = np.quantile(all_proprio_array, 0.99, axis=0)
+
+        dataset_statistics[self.repo_id]["action"]["q01"] = actions_q01.astype(np.float64)
+        dataset_statistics[self.repo_id]["action"]["q99"] = actions_q99.astype(np.float64)
+        dataset_statistics[self.repo_id]["proprio"]["q01"] = proprio_q01.astype(np.float64)
+        dataset_statistics[self.repo_id]["proprio"]["q99"] = proprio_q99.astype(np.float64)
+
+        return dataset_statistics
+
+    def _process_parquet_file(self, file_path: Path) -> Dict[str, Any]:
+        try:
+            # 使用pyarrow读取parquet文件（更快）
+            table = pq.read_table(file_path)
+
+            # 转换为pandas DataFrame以便处理
+            df = table.to_pandas()
+
+            # print(f"处理文件 {file_path.name}, 包含 {len(df)} 行数据")
+
+            # 处理action数据
+            action_array = None
+            if "action" in df.columns:
+                action_data = df["action"].values
+                # 处理可能的嵌套结构
+                if len(action_data) > 0:
+                    # 检查是否为数组类型
+                    first_action = action_data[0]
+                    if isinstance(first_action, (list, tuple, np.ndarray)):
+                        # 将所有action堆叠成2D数组
+                        action_array = np.stack([np.array(a) for a in action_data])
+                    else:
+                        action_array = action_data.reshape(-1, 1)
+                    # print(f"  - Action数据形状: {action_array.shape}")
+
+            proprio_array = None
+            # 处理observation.state数据（proprio）
+            if "observation.state" in df.columns:
+                proprio_data = df["observation.state"].values
+                if len(proprio_data) > 0:
+                    first_proprio = proprio_data[0]
+                    if isinstance(first_proprio, (list, tuple, np.ndarray)):
+                        proprio_array = np.stack([np.array(p) for p in proprio_data])
+                    else:
+                        proprio_array = proprio_data.reshape(-1, 1)
+                    # print(f"  - Proprio数据形状: {proprio_array.shape}")
+
+        except Exception as e:
+            print(f"读取文件 {file_path} 时出错: {e}")
+        finally:
+            if action_array is None:
+                action_array = np.empty((0, ACTION_DIM), dtype=np.float32)
+            if proprio_array is None:
+                proprio_array = np.empty((0, PROPRIO_DIM), dtype=np.float32)
+            return action_array, proprio_array
+
+    def _get_parquet_files(self) -> List[Path]:
+        """
+        获取数据集中所有的parquet文件路径
+        """
+        parquet_files = []
+
+        # 获取数据集根目录
+        try:
+            dataset_root = self.lerobot_dataset.root
+            data_dir = dataset_root / "data"
+
+            if not data_dir.exists():
+                print(f"数据目录不存在: {data_dir}")
+                return []
+
+            # 如果指定了特定的episodes，只处理这些episodes
+            if self.lerobot_dataset.episodes is not None:
+                for ep_idx in self.lerobot_dataset.episodes:
+                    parquet_path = dataset_root / self.lerobot_dataset.meta.get_data_file_path(ep_idx)
+                    if parquet_path.exists():
+                        parquet_files.append(parquet_path)
+            else:
+                # 递归查找所有parquet文件
+                parquet_files = list(data_dir.rglob("*.parquet"))
+
+            print(f"数据目录: {data_dir}")
+            print(f"找到parquet文件数: {len(parquet_files)}")
+
+        except Exception as e:
+            print(f"获取parquet文件列表失败: {e}")
+            return []
+
+        return sorted(parquet_files)
 
     def _convert_lerobot_to_rlds_format(self, lerobot_item: Dict[str, Any]) -> Dict[str, Any]:
         """
         将 LeRobot 数据格式转换为 RLDS 格式，以便 RLDSBatchTransform 可以处理
-
-        Args:
-            lerobot_item: LeRobot 数据集返回的单个数据项
-
-        Returns:
-            转换为 RLDS 格式的数据项
         """
         # 构造 RLDS 格式的数据结构
         rlds_batch = {
-            "dataset_name": self.repo_id.encode(),  # 转换为 bytes
+            "dataset_name": self.repo_id.encode(),
             "observation": {},
-            "task": {},
+            "task": {
+                "language_instruction": None,  # 稍后填充
+            },
             "action": None,
             "absolute_action_mask": None,
         }
@@ -407,9 +650,11 @@ class LeRobotIterDataset(IterableDataset):
                 if isinstance(img_data, torch.Tensor):
                     # 从 (C, H, W) 转换为 (1, H, W, C) 格式
                     if img_data.dim() == 3:
-                        img_data = img_data.permute(1, 2, 0).unsqueeze(0).numpy()
+                        img_data = (
+                            resize_image(img_data, size=self.resize_resolution).permute(1, 2, 0).unsqueeze(0).numpy()
+                        )
                     elif img_data.dim() == 4:
-                        img_data = img_data.permute(0, 2, 3, 1).numpy()
+                        img_data = resize_image(img_data, size=self.resize_resolution).permute(0, 2, 3, 1).numpy()
 
                 # 根据相机名称映射到标准命名
                 if not primary_found and (
@@ -443,7 +688,7 @@ class LeRobotIterDataset(IterableDataset):
             timestamp = lerobot_item["timestamp"]
             if isinstance(timestamp, torch.Tensor):
                 timestamp = timestamp.item()
-            rlds_batch["observation"]["timestep"] = timestamp
+            rlds_batch["observation"]["timestep"] = np.array(timestamp, dtype=np.int32)
 
         # 处理动作数据
         if "action" in lerobot_item:
@@ -497,6 +742,7 @@ class LeRobotIterDataset(IterableDataset):
             "proprio": np.array([True]),
             "timestep": np.array([True]),
         }
+        rlds_batch["observation"]["pad_mask"] = np.array([True])
 
         rlds_batch["task"]["pad_mask_dict"] = {
             "language_instruction": True,
@@ -510,39 +756,104 @@ class LeRobotIterDataset(IterableDataset):
         if rlds_batch["action"] is not None:
             action_dim = rlds_batch["action"].shape[-1]
             # 假设最后一维是抓取器，设置为绝对值
-            absolute_mask = [False] * (action_dim - 1) + [True]
+            absolute_mask = [True] * (action_dim - 1) + [True]
             rlds_batch["absolute_action_mask"] = np.array(absolute_mask)
 
         return rlds_batch
 
+    def _organize_episodes_data(self):
+        """按episode组织数据，用于目标重标记"""
+        self.episodes_data = {}
+        ori_episode_len_infos = self.lerobot_dataset.meta.episodes
+        current_data_idx = 0
+        for episode_idx in range(len(ori_episode_len_infos)):
+            episode_len = ori_episode_len_infos[episode_idx]["length"]
+            self.episodes_data[episode_idx] = [x for x in range(current_data_idx, current_data_idx + episode_len)]
+            current_data_idx += episode_len
+
+    def _uniform_goal_relabeling(
+        self, rlds_batch: Dict[str, Any], episode_indices: list, current_step_idx: int
+    ) -> Dict[str, Any]:
+        """
+        实现均匀分布的目标重标记策略
+
+        Args:
+            rlds_batch: 当前的RLDS格式数据
+            episode_indices: 当前episode中所有步骤的索引
+            current_step_idx: 当前步骤在episode中的位置
+
+        Returns:
+            添加了目标信息的rlds_batch
+        """
+        traj_len = len(episode_indices)
+
+        # 选择一个未来的随机索引 [current_step_idx + 1, traj_len)
+        if current_step_idx + 1 < traj_len:
+            # 随机选择未来的一个步骤作为目标
+            future_step_idx = random.randint(current_step_idx + 1, traj_len - 1)
+            goal_data_idx = episode_indices[future_step_idx]
+
+            # 获取目标状态的观察数据
+            goal_item = self.lerobot_dataset[goal_data_idx]
+
+            # 将目标观察添加到task中
+            for cam_key in self.lerobot_dataset.meta.camera_keys:
+                if cam_key in goal_item:
+                    img_data = goal_item[cam_key]
+                    if isinstance(img_data, torch.Tensor):
+                        if img_data.dim() == 3:
+                            img_data = (
+                                resize_image(img_data, size=self.resize_resolution).permute(1, 2, 0).unsqueeze(0).numpy()
+                            )
+
+                    # FIXME: 这里命名是靠拢libero的  后续要改
+                    if "top" in cam_key.lower() or "primary" in cam_key.lower():
+                        rlds_batch["task"]["image_primary"] = img_data
+                    elif "right" in cam_key.lower() or "wrist" in cam_key.lower():
+                        rlds_batch["task"]["image_wrist"] = img_data
+
+            # 添加目标状态的本体感知信息
+            if "observation.state" in goal_item:
+                proprio_data = goal_item["observation.state"]
+                if isinstance(proprio_data, torch.Tensor):
+                    proprio_data = proprio_data.numpy()
+                # rlds_batch["task"]["proprio"] = proprio_data
+                rlds_batch["task"]["proprio"] = self._norm_one_action(
+                    self.dataset_statistics[self.repo_id]["proprio"], proprio_data
+                )
+
+            rlds_batch["task"]["timestep"] = goal_data_idx
+        return rlds_batch
+
     def __iter__(self) -> Dict[str, Any]:
         """
-        迭代数据集中的所有样本，返回经过 batch_transform 处理的数据
-
-        输出示例：
-        {
-            'pixel_values': torch.Size([6, 224, 224]),
-            'input_ids': torch.Size([90]),
-            'labels': torch.Size([90]),
-            'dataset_name': b'your_lerobot_dataset',
-            'actions': np.array([8, 7]),
-            'pixel_values_wrist': torch.Size([6, 224, 224]),  # 如果使用手腕相机
-            'proprio': np.array([1, 7])  # 如果使用本体感知
-        }
+        迭代数据集中的所有样本，支持目标重标记
         """
-        for idx in range(len(self.lerobot_dataset)):
+        for idx in range(len(self.lerobot_dataset)) :
             # 获取 LeRobot 格式的数据
+            if not CLOSE_SHUFFLE:
+                idx=random.sample(self.idx_list, 1)[0]
             lerobot_item = self.lerobot_dataset[idx]
 
             # 转换为 RLDS 格式
             rlds_batch = self._convert_lerobot_to_rlds_format(lerobot_item)
+
+            # 如果启用目标重标记
+            if self.goal_relabeling_strategy == "uniform":
+                ep_idx = lerobot_item["episode_index"].item()
+                episode_indices = self.episodes_data[ep_idx]
+                current_step_idx = episode_indices.index(idx)
+
+                rlds_batch = self._uniform_goal_relabeling(rlds_batch, episode_indices, current_step_idx)
+
+            if not CLOSE_ACTION_NORM:
+                rlds_batch = self._normalize_sample_action_and_proprio(rlds_batch)
 
             # 应用 batch_transform 转换为 OpenVLA 格式
             if self.batch_transform is None:
                 yield rlds_batch
             else:
                 transformed_batch = self.batch_transform(rlds_batch)
-
                 yield transformed_batch
 
     def __len__(self) -> int:

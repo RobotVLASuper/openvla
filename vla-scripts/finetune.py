@@ -21,7 +21,7 @@ from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import MultiStepLR,LinearLR
+from torch.optim.lr_scheduler import MultiStepLR, LinearLR
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -59,7 +59,7 @@ from prismatic.vla.constants import (
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
 )
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset, LeRobotIterDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 import prismatic.debug_tools as D
@@ -68,13 +68,14 @@ import prismatic.debug_tools as D
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Wandb set offline
-os.environ["WANDB_MODE"]="offline"
+os.environ["WANDB_MODE"] = "offline"
+
 
 def ensure_distributed():
     if not dist.is_available():
         return
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23459", rank=0, world_size=1)
+        dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:23458", rank=0, world_size=1)
 
 
 @dataclass
@@ -790,7 +791,8 @@ def run_validation(
         log_metrics_to_wandb(avg_val_metrics, "VLA Val", log_step, wandb)
         log_metrics_to_tensorboard(avg_val_metrics, "VLA Val", log_step, writer)
 
-def get_scheduler(cfg:FinetuneConfig, optimizer):
+
+def get_scheduler(cfg: FinetuneConfig, optimizer):
     """
     Get the learning rate scheduler based on the configuration.
 
@@ -805,9 +807,12 @@ def get_scheduler(cfg:FinetuneConfig, optimizer):
         # NOTE: officially
         return MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
     elif cfg.lr_scheduler == "linear":
-        return LinearLR(optimizer, start_factor=cfg.learning_rate,end_factor=0.01*cfg.learning_rate,total_iters=cfg.max_steps)
+        return LinearLR(
+            optimizer, start_factor=cfg.learning_rate, end_factor=0.01 * cfg.learning_rate, total_iters=cfg.max_steps
+        )
     else:
         raise ValueError(f"Unsupported lr_scheduler: {cfg.lr_scheduler}")
+
 
 @draccus.wrap()
 def finetune(cfg: FinetuneConfig) -> None:
@@ -1000,7 +1005,7 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Create learning rate scheduler
 
-    scheduler=get_scheduler(cfg, optimizer)
+    scheduler = get_scheduler(cfg, optimizer)
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
 
@@ -1032,30 +1037,48 @@ def finetune(cfg: FinetuneConfig) -> None:
         use_wrist_image=use_wrist_image,
         use_proprio=cfg.use_proprio,
     )
-    train_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
-    )
-    if cfg.use_val_set:
-        val_dataset = RLDSDataset(
+    if "meta" in os.listdir(cfg.data_root_dir):
+        train_dataset = LeRobotIterDataset(
+            repo_id=cfg.dataset_name,
+            batch_transform=batch_transform,
+            resize_resolution=tuple(vla.module.config.image_sizes),
+            root=cfg.data_root_dir,
+        )
+    else:
+        train_dataset = RLDSDataset(
             cfg.data_root_dir,
             cfg.dataset_name,
             batch_transform,
             resize_resolution=tuple(vla.module.config.image_sizes),
-            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
+            shuffle_buffer_size=cfg.shuffle_buffer_size,
             image_aug=cfg.image_aug,
-            train=False,
-        ) # [Important] Save dataset statistics so that we can unnormalize actions during inference if distributed_state.is_main_process:
+        )
+    if cfg.use_val_set:
+        if "meta" in os.listdir(cfg.data_root_dir):
+            val_dataset = LeRobotIterDataset(
+                repo_id=cfg.dataset_name,
+                batch_transform=batch_transform,
+                resize_resolution=tuple(vla.module.config.image_sizes),
+                root=cfg.data_root_dir,
+                train=False,
+            )
+        else:
+            val_dataset = RLDSDataset(
+                cfg.data_root_dir,
+                cfg.dataset_name,
+                batch_transform,
+                resize_resolution=tuple(vla.module.config.image_sizes),
+                shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
+                image_aug=cfg.image_aug,
+                train=False,
+            )  # [Important] Save dataset statistics so that we can unnormalize actions during inference if distributed_state.is_main_process:
         save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
 
     # Create collator and dataloader
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
+
     dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,

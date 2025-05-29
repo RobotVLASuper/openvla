@@ -1,6 +1,7 @@
 import os, cv2, json
 import tensorflow as tf
 from tqdm import tqdm
+import prismatic.debug_tools as D
 
 
 def json_load(json_file):
@@ -33,7 +34,7 @@ def parse_json(json_file, resize_imgW, resize_imgH):
         image_1 = tf.io.read_file(image_1_path)
         image_1_tensor = tf.image.decode_png(image_1, channels=3)
         image_1_resize_tensor = tf.image.resize(image_1_tensor, (resize_imgH, resize_imgW))  # tf size(H,W)
-        image_1_resize_tensor = tf.cast(image_1_resize_tensor * 255, tf.uint8)
+        image_1_resize_tensor = tf.cast(image_1_resize_tensor, tf.uint8)
         image_1_resize_string = tf.image.encode_png(image_1_resize_tensor)
         print(image_1_resize_string)
         # exit(0)
@@ -42,7 +43,7 @@ def parse_json(json_file, resize_imgW, resize_imgH):
         image_2 = tf.io.read_file(image_2_path)
         image_2_tensor = tf.image.decode_png(image_2, channels=3)
         image_2_resize_tensor = tf.image.resize(image_2_tensor, (resize_imgH, resize_imgW))  # tf size(H,W)
-        image_2_resize_tensor = tf.cast(image_2_resize_tensor * 255, tf.uint8)
+        image_2_resize_tensor = tf.cast(image_2_resize_tensor, tf.uint8)
         image_2_resize_string = tf.image.encode_png(image_2_resize_tensor)
         obs_image_2.append(image_2_resize_string.numpy())
 
@@ -53,8 +54,7 @@ def parse_json(json_file, resize_imgW, resize_imgH):
             language_instruction.append(LanguageTask.encode('utf-8'))
         # process obs_state
         # Gripper position must be between 0/255.0 and 255/255.0 (open==0.0~close==1.0 => open==1,close==0)
-        # idx_gripper = 1 if idx_info['observation']['joint_positions'][-1] < 0.35 else 0
-        #
+        
         # if idx == len(episode_infos.keys()) - 1:
         #     idx_gripper = 1  # (open)
         if DataForm == 'grip':
@@ -64,6 +64,7 @@ def parse_json(json_file, resize_imgW, resize_imgH):
             obs_state.append(idx_info['observation']['obs_state'])
             action.append(idx_info['observation']['action'])
         elif DataForm == 'joint':
+            idx_gripper = 1 if idx_info['observation']['joint_positions'][-1] < 0.35 else 0
             obs_state.append(idx_info['observation']['joint_positions'][:-1] + [idx_gripper])
         else:
             print('DataForm must be joint or grip')
@@ -125,7 +126,7 @@ def serialize_example(json_file):
         'episode_metadata/file_path': tf.train.Feature(bytes_list=tf.train.BytesList(value=[file_path])),
 
     }))
-
+    print('==4444444444444======')
     return example.SerializeToString()
 
 
@@ -197,3 +198,5 @@ if __name__ == "__main__":
 
     with open(os.path.join(save_dir, 'dataset_info.json'), 'w') as fw:
         json.dump(dataset_info(DatasetName, TrainVal, BytesNum, LengthsShard), fw, indent=4)
+
+

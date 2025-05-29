@@ -54,7 +54,7 @@ def timethis(func):
 
 
 @contextmanager
-def timeblock(label: str = "\033[1;34mSpend time:\033[0m", condition=True):
+def timeblock(label: str = "Spend time:", condition=True):
     r"""上下文管理测试代码块运行时间,需要
     import time
     from contextlib import contextmanager
@@ -66,8 +66,7 @@ def timeblock(label: str = "\033[1;34mSpend time:\033[0m", condition=True):
         finally:
             end = time.perf_counter()
             time_spend = end - start
-            if time_spend > 10.0:
-                print("\033[1;34m{} : {}\033[0m".format(label, time_spend))
+            print("\033[1;34m{} : {}\033[0m".format(label, time_spend))
     else:
         yield
 

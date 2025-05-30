@@ -23,6 +23,7 @@ from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
 from transformers import PreTrainedTokenizerBase
 import torchvision.transforms as T
+from torchvision.transforms import functional as F
 from prismatic.models.backbones.llm.prompting import PromptBuilder
 from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
@@ -43,6 +44,103 @@ from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_da
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 from prismatic.vla.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 import prismatic.debug_tools as D
+
+
+# FIXME: 这里写的很垃圾，领导不管了，时间紧，糊屎糊屎,直接AI生成
+class RLDSImageAugmentation:
+    """使用 torchvision 实现的图像增强类"""
+
+    def __init__(self):
+        augment_config = {
+            "random_resized_crop": {"scale": [0.9, 0.9], "ratio": [1.0, 1.0]},
+            "random_brightness": [0.2],
+            "random_contrast": [0.8, 1.2],
+            "random_saturation": [0.8, 1.2],
+            "random_hue": [0.05],
+            "augment_order": [
+                "random_resized_crop",
+                "random_brightness",
+                "random_contrast",
+                "random_saturation",
+                "random_hue",
+            ],
+        }
+
+        self.config = augment_config
+        self.augment_order = augment_config.get("augment_order", [])
+        self.totensor = T.PILToTensor()
+
+    def __call__(self, image):
+        """
+        应用图像增强
+
+        Args:
+            image: PIL Image 或 torch.Tensor
+
+        Returns:
+            增强后的图像 (PIL Image)
+        """
+        # 确保输入是 PIL Image
+        if isinstance(image, torch.Tensor):
+            if image.dtype == torch.uint8:
+                image = F.to_pil_image(image)
+            else:
+                # 假设是 float 类型，范围 [0, 1]
+                image = F.to_pil_image(image.clamp(0, 1))
+
+        # 按指定顺序应用增强
+        for aug_name in self.augment_order:
+            if aug_name in self.config:
+                image = self._apply_augmentation(image, aug_name)
+
+        return self.totensor(image)
+
+    def _apply_augmentation(self, image, aug_name):
+        """应用单个增强操作"""
+
+        if aug_name == "random_resized_crop":
+            params = self.config[aug_name]
+            scale = params.get("scale", [0.08, 1.0])
+            ratio = params.get("ratio", [3.0 / 4.0, 4.0 / 3.0])
+
+            # 获取原始尺寸
+            width, height = image.size
+
+            # 应用 RandomResizedCrop
+            transform = T.RandomResizedCrop(
+                size=(height, width), scale=scale, ratio=ratio, interpolation=T.InterpolationMode.BILINEAR
+            )
+            image = transform(image)
+
+        elif aug_name == "random_brightness":
+            brightness_factor = self.config[aug_name][0]
+            # brightness_factor 是变化范围，实际值在 [1-factor, 1+factor] 之间
+            actual_factor = random.uniform(1 - brightness_factor, 1 + brightness_factor)
+            image = F.adjust_brightness(image, actual_factor)
+
+        elif aug_name == "random_contrast":
+            contrast_range = self.config[aug_name]
+            if len(contrast_range) == 2:
+                contrast_factor = random.uniform(contrast_range[0], contrast_range[1])
+            else:
+                contrast_factor = contrast_range[0]
+            image = F.adjust_contrast(image, contrast_factor)
+
+        elif aug_name == "random_saturation":
+            saturation_range = self.config[aug_name]
+            if len(saturation_range) == 2:
+                saturation_factor = random.uniform(saturation_range[0], saturation_range[1])
+            else:
+                saturation_factor = saturation_range[0]
+            image = F.adjust_saturation(image, saturation_factor)
+
+        elif aug_name == "random_hue":
+            hue_factor = self.config[aug_name][0]
+            # hue_factor 的范围是 [-0.5, 0.5]
+            actual_hue = random.uniform(-hue_factor, hue_factor)
+            image = F.adjust_hue(image, actual_hue)
+
+        return image
 
 
 @dataclass
@@ -357,6 +455,7 @@ class LeRobotIterDataset(IterableDataset):
         repo_id: str,
         batch_transform: Optional[RLDSBatchTransform],
         resize_resolution: Tuple[int, int],
+        img_aug: bool = False,
         root: str | Path | None = None,
         episodes: list[int] | None = None,
         image_transforms: Callable | None = None,
@@ -419,24 +518,28 @@ class LeRobotIterDataset(IterableDataset):
             self.action_norm_mask = action_norm_mask
         else:
             self.action_norm_mask = np.array(action_norm_mask, dtype=np.bool_)
-        self.idx_list=list(range(len(self.lerobot_dataset)))
+        self.idx_list = list(range(len(self.lerobot_dataset)))
+        self.image_transform = RLDSImageAugmentation()
+        self.img_aug = img_aug
 
+    def _list2npfloat64(self, list_data: list) -> np.ndarray:
+        return np.array(list_data, dtype=np.float64)
 
     def _norm_one_action(self, statistics: Dict[str, np.ndarray], data: np.ndarray) -> np.ndarray:
         if self.action_normalization_type == NormalizationType.NORMAL:
-            mean = statistics["mean"]
-            std = statistics["std"]
+            mean = self._list2npfloat64(statistics["mean"])
+            std = self._list2npfloat64(statistics["std"])
             # 对masked的维度进行归一化
             normalized_data = np.where(self.action_norm_mask, (data - mean) / (std + 1e-8), data)
             return normalized_data
 
         elif self.action_normalization_type in [NormalizationType.BOUNDS, NormalizationType.BOUNDS_Q99]:
             if self.action_normalization_type == NormalizationType.BOUNDS:
-                low = statistics["min"]
-                high = statistics["max"]
+                low = self._list2npfloat64(statistics["min"])
+                high = self._list2npfloat64(statistics["max"])
             else:  # BOUNDS_Q99
-                low = statistics["q01"]
-                high = statistics["q99"]
+                low = self._list2npfloat64(statistics["q01"])
+                high = self._list2npfloat64(statistics["q99"])
 
             # 归一化到[-1, 1]范围
             normalized_data = np.where(
@@ -802,9 +905,10 @@ class LeRobotIterDataset(IterableDataset):
                     img_data = goal_item[cam_key]
                     if isinstance(img_data, torch.Tensor):
                         if img_data.dim() == 3:
-                            img_data = (
-                                resize_image(img_data, size=self.resize_resolution).permute(1, 2, 0).unsqueeze(0).numpy()
-                            )
+                            img_data = resize_image(img_data, size=self.resize_resolution)
+                            if self.img_aug:
+                                img_data = self.image_transform(img_data)
+                            img_data = img_data.permute(1, 2, 0).unsqueeze(0).numpy()
 
                     # FIXME: 这里命名是靠拢libero的  后续要改
                     if "top" in cam_key.lower() or "primary" in cam_key.lower():
@@ -829,11 +933,16 @@ class LeRobotIterDataset(IterableDataset):
         """
         迭代数据集中的所有样本，支持目标重标记
         """
-        for idx in range(len(self.lerobot_dataset)) :
+        for idx in range(len(self.lerobot_dataset)):
             # 获取 LeRobot 格式的数据
             if not CLOSE_SHUFFLE:
-                idx=random.sample(self.idx_list, 1)[0]
+                idx = random.sample(self.idx_list, 1)[0]
             lerobot_item = self.lerobot_dataset[idx]
+            if self.img_aug:
+                lerobot_item["observation.images.0_top"] = self.image_transform(lerobot_item["observation.images.0_top"])
+                lerobot_item["observation.images.1_right"] = self.image_transform(
+                    lerobot_item["observation.images.1_right"]
+                )
 
             # 转换为 RLDS 格式
             rlds_batch = self._convert_lerobot_to_rlds_format(lerobot_item)

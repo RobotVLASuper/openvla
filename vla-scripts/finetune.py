@@ -808,7 +808,7 @@ def get_scheduler(cfg: FinetuneConfig, optimizer):
         return MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
     elif cfg.lr_scheduler == "linear":
         return LinearLR(
-            optimizer, start_factor=cfg.learning_rate, end_factor=0.01 * cfg.learning_rate, total_iters=cfg.max_steps
+            optimizer, start_factor=1, end_factor=0.05, total_iters=cfg.max_steps
         )
     else:
         raise ValueError(f"Unsupported lr_scheduler: {cfg.lr_scheduler}")
@@ -1043,6 +1043,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             batch_transform=batch_transform,
             resize_resolution=tuple(vla.module.config.image_sizes),
             root=cfg.data_root_dir,
+            img_aug=cfg.image_aug,
         )
     else:
         train_dataset = RLDSDataset(
@@ -1061,6 +1062,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 resize_resolution=tuple(vla.module.config.image_sizes),
                 root=cfg.data_root_dir,
                 train=False,
+                img_aug=cfg.image_aug,
             )
         else:
             val_dataset = RLDSDataset(
@@ -1079,12 +1081,16 @@ def finetune(cfg: FinetuneConfig) -> None:
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
 
+    if isinstance(train_dataset, LeRobotIterDataset):
+        num_workers=8
+    else:
+        num_workers=0
     dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         sampler=None,
         collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+        num_workers=num_workers,  # Important: Set to 0 if using RLDS, which uses its own parallelism
     )
     if cfg.use_val_set:
         val_batch_size = cfg.batch_size

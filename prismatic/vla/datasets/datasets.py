@@ -477,6 +477,7 @@ class LeRobotIterDataset(IterableDataset):
             True,
             False,
         ),  # 用于动作去归一化
+        shuffle: bool = True,
     ) -> None:
         """
         初始化 LeRobotIterDataset
@@ -521,6 +522,9 @@ class LeRobotIterDataset(IterableDataset):
         self.idx_list = list(range(len(self.lerobot_dataset)))
         self.image_transform = RLDSImageAugmentation()
         self.img_aug = img_aug
+        self.shuffle = shuffle
+        if CLOSE_SHUFFLE:
+            self.shuffle = False
 
     def _list2npfloat64(self, list_data: list) -> np.ndarray:
         return np.array(list_data, dtype=np.float64)
@@ -856,6 +860,7 @@ class LeRobotIterDataset(IterableDataset):
         }
 
         # 添加绝对动作掩码（根据动作类型设置）
+        # NOTE: 这里如果是相对，那最后应该都是000000
         if rlds_batch["action"] is not None:
             action_dim = rlds_batch["action"].shape[-1]
             # 假设最后一维是抓取器，设置为绝对值
@@ -935,7 +940,7 @@ class LeRobotIterDataset(IterableDataset):
         """
         for idx in range(len(self.lerobot_dataset)):
             # 获取 LeRobot 格式的数据
-            if not CLOSE_SHUFFLE:
+            if self.shuffle:
                 idx = random.sample(self.idx_list, 1)[0]
             lerobot_item = self.lerobot_dataset[idx]
             if self.img_aug:

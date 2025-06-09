@@ -9,3 +9,4 @@ CUDA_VISIBLE_DEVICES=1 python vla-scripts/train.py \
   --wandb_entity openvla  \
   --save_interval 100 \
   --is_resume False
+

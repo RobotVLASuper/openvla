@@ -34,7 +34,9 @@ from prismatic.vla.constants import (
     STOP_INDEX,
     NormalizationType,
 )
+import prismatic.debug_tools as D
 
+# from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig, PrismaticConfig
 from .configuration_prismatic import OpenVLAConfig, PrismaticConfig
 
 # Set up logger
@@ -111,6 +113,9 @@ class PrismaticVisionBackbone(nn.Module):
 
         # Patch LayerScale modules for HF compatibility
         self._patch_layer_scales()
+
+        #DEBUG:
+        self.save_num=0
 
     def _create_featurizer(self, model_id: str, img_size: int, act_layer: Optional[str]) -> nn.Module:
         """
@@ -217,7 +222,14 @@ class PrismaticVisionBackbone(nn.Module):
 
                 # Get patches from both SigLIP and DINOv2 vision transformers
                 patches = self.featurizer(img_regular)
+                #DEBUG:
+                patches_tmp=patches.detach().cpu().squeeze(0).reshape(16,16,patches.shape[-1])
+                D.show_img(patches_tmp,save_path=f"/data1/tmp/feature_map/siglip_patches_{self.save_num}.png",channel_order="HWC")
                 patches_fused = self.fused_featurizer(img_fused)
+                patches_fused_tmp=patches_fused.detach().cpu().squeeze(0).reshape(16,16,patches_fused.shape[-1])
+                D.show_img(patches_fused_tmp,save_path=f"/data1/tmp/feature_map/dinov2_patches_{self.save_num}.png",channel_order="HWC")
+                # breakpoint()
+                self.save_num+=1
 
                 # Concatenate SigLIP and DINOv2 patches along the hidden dimension
                 combined_patches = torch.cat([patches, patches_fused], dim=2)
@@ -1003,6 +1015,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
 
         # Process vision features
         projected_patch_embeddings = self._process_vision_features(pixel_values, language_embeddings, use_film)
+        # breakpoint()
 
         # Add proprioceptive features if provided
         use_proprio = proprio_projector is not None and proprio is not None

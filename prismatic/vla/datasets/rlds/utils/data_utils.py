@@ -129,6 +129,7 @@ def binarize_gripper_actions(actions: tf.Tensor) -> tf.Tensor:
     return tf.scan(scan_fn, tf.range(tf.shape(actions)[0]), actions[-1], reverse=True)
 
 
+#NOTE: 夹爪取了反
 def invert_gripper_actions(actions: tf.Tensor) -> tf.Tensor:
     return 1 - actions
 

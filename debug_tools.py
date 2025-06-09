@@ -96,8 +96,6 @@ def _convert_shape(data: Tensor, channel: str):
     if len(data.shape) > 4 or len(data.shape) < 2:
         raise ValueError("dim num of input tensor must >1 and <5")
     if isinstance(data, torch.Tensor):
-        if data.dtype==torch.bfloat16:
-            data = data.float()
         data = data.detach().cpu().numpy()
     if len(data.shape) == 2:
         if len(channel) == 2:

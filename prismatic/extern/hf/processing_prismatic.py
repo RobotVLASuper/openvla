@@ -132,6 +132,7 @@ class PrismaticImageProcessor(ImageProcessingMixin):
 
         # [Contract] Fused Backbones expect "channel-stacked" inputs; we'll unpack on the model side!
         imgs_t = []
+        # NOTE: 有两个backbone，siglip和dinov2，
         for idx in range(len(self.input_sizes)):
             img_idx = TVF.resize(img, **self.tvf_resize_params[idx])
             img_idx = TVF.center_crop(img_idx, **self.tvf_crop_params[idx])

@@ -387,7 +387,8 @@ def get_processor(cfg: Any) -> AutoProcessor:
     Returns:
         AutoProcessor: The model's processor
     """
-    return AutoProcessor.from_pretrained(cfg.pretrained_checkpoint, trust_remote_code=True)
+    # DEBUG:
+    return AutoProcessor.from_pretrained(cfg.pretrained_checkpoint, trust_remote_code=False)
 
 
 def get_proprio_projector(cfg: Any, llm_dim: int, proprio_dim: int) -> ProprioProjector:
